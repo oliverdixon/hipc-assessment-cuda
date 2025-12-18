@@ -11,7 +11,7 @@
 typedef double compute_t;
 typedef unsigned int indexer_t;
 
-struct iterator
+struct bounds
 {
     indexer_t begin;
     indexer_t end;
@@ -19,31 +19,43 @@ struct iterator
 
 struct dim2
 {
+    __host__ __device__
+    dim2(const indexer_t x, const indexer_t y) noexcept :
+        x(x),
+        y(y)
+    { }
+
     indexer_t x;
     indexer_t y;
 };
 
 struct compute_dim2
 {
+    compute_dim2(const compute_t x, const compute_t y) noexcept :
+        x(x),
+        y(y)
+    { }
+
     compute_t x;
     compute_t y;
 };
 
-#ifndef TOSTRING
-#define STRINGIFY(x) #x
-#define TOSTRING(x) STRINGIFY(x)
-#endif
+enum cell_flags
+{
+    CELL_BOUNDARY = 0, /**< Boundary cell */
 
-#define safe_cuda(expr) \
-    do { \
-        cudaError_t status = expr; \
-        if (status != cudaSuccess) { \
-            fprintf(stderr, "%s: expression %s failed with error %s\n", \
-                __FILE__ ":" TOSTRING(__LINE__), \
-                #expr, \
-                cudaGetErrorString(status)); \
-            assert(0); \
-        } \
-    } while (0)
+    CELL_FLUID_NORTH = 1, /**< Boundary cell with fluid to the north */
+    CELL_FLUID_SOUTH = 1 << 1, /**< Boundary cell with fluid to the south */
+    CELL_FLUID_WEST = 1 << 2, /**< Boundary cell with fluid to the west */
+    CELL_FLUID_EAST = 1 << 3, /**< Boundary cell with fluid to the east */
+
+    CELL_FLUID_NORTHWEST = CELL_FLUID_NORTH | CELL_FLUID_WEST,
+    CELL_FLUID_SOUTHWEST = CELL_FLUID_SOUTH | CELL_FLUID_WEST,
+    CELL_FLUID_NORTHEAST = CELL_FLUID_NORTH | CELL_FLUID_EAST,
+    CELL_FLUID_SOUTHEAST = CELL_FLUID_SOUTH | CELL_FLUID_EAST,
+    CELL_FLUID_ALL = CELL_FLUID_NORTH | CELL_FLUID_SOUTH | CELL_FLUID_EAST | CELL_FLUID_WEST,
+
+    CELL_FLUID = 1 << 4, /**< Fluid cell */
+};
 
 #endif // HIPC_ASSESSMENT_TYPES_H

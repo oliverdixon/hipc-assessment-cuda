@@ -4,12 +4,16 @@ project(HIPC_Assessment_CUDA LANGUAGES CUDA)
 find_package(CUDAToolkit REQUIRED)
 
 add_executable(Airfoil_CUDA
-    Source/airfoil.cu
-    Source/instance.cu
-    Source/instance.h
-    Source/types.h
+        Source/AirfoilDriver.cu
+        Source/DeviceRegion.cu
+        Source/DeviceRegion.cuh
+        Source/HostRegion.cu
+        Source/HostRegion.cuh
+        Source/Metadata.cuh
+        Source/SafeCUDA.cuh
 )
 
 set_property(TARGET Airfoil_CUDA PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+target_compile_options(Airfoil_CUDA PRIVATE $<$<CONFIG:Debug>:-g -G>)
 
 add_executable(OccupanyTest Source/occupany_test.cu)
