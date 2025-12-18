@@ -1,0 +1,6 @@
+/cmake-build-*
+/out
+/Source/valgrind.supp
+
+.idea/runConfigurations
+.idea/cmake.xml
