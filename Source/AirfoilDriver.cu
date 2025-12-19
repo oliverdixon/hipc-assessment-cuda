@@ -49,12 +49,10 @@ int main()
         device_region.compute_poisson_source();
 
         compute_t residual = std::numeric_limits<compute_t>::max();
+
         for (indexer_t sor_iteration = 0; sor_iteration < sor_max_iterations; ++sor_iteration) {
-            break; // TODO: remove
-
-            // TODO: SOR cycle
-            // TODO: compute L_2 norm of residual
-
+            device_region.perform_sor_cycle();
+            residual = device_region.compute_residual_norm_sq();
             if (std::fabs(residual) < sor_residual_epsilon * sor_residual_epsilon)
                 break; // SOR has converged.
         }

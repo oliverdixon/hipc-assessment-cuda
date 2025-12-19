@@ -17,3 +17,4 @@ set_property(TARGET Airfoil_CUDA PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 target_compile_options(Airfoil_CUDA PRIVATE $<$<CONFIG:Debug>:-g -G>)
 
 add_executable(OccupanyTest Source/occupany_test.cu)
+add_executable(ReductionTest Source/reduction_test.cu)

@@ -205,9 +205,8 @@ __global__ void apply_boundary_conditions(const Metadata * const metadata, compu
          */
 
         const indexer_t west_anchored_idx = metadata->extents.x * idx.y;
-        velocity_x[west_anchored_idx] = metadata->initial_velocity_x;
-        velocity_y[west_anchored_idx] = 2 * metadata->initial_velocity_y -
-            velocity_y[west_anchored_idx + 1];
+        velocity_x[west_anchored_idx] = Metadata::initial_velocity_x;
+        velocity_y[west_anchored_idx] = 2 * Metadata::initial_velocity_y - velocity_y[west_anchored_idx + 1];
     }
 }
 
@@ -389,6 +388,132 @@ __global__ void compute_poisson_source(const Metadata * const metadata, const co
     }
 }
 
+__global__ void compute_local_residuals(const Metadata * const metadata, const compute_t * const pressure,
+    const compute_t * const poisson_source, const cell_flags * const flags, compute_t * const residual_dest,
+    unsigned int * const fluid_dest)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
+
+    if (idx.x >= metadata->extents.x || idx.y >= metadata->extents.y)
+        return;
+
+    const unsigned int step_sq = metadata->resolution * metadata->resolution;
+    const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
+
+    const indexer_t idx_east = idx.x + 1 + metadata->extents.x * idx.y;
+    const indexer_t idx_west = idx.x - 1 + metadata->extents.x * idx.y;
+    const indexer_t idx_north = idx.x + metadata->extents.x * (idx.y - 1);
+    const indexer_t idx_south = idx.x + metadata->extents.x * (idx.y + 1);
+
+    if (flags[idx_central] & CELL_FLUID) {
+        const double epsilon_east = !!(flags[idx_east] & CELL_FLUID);
+        const double epsilon_west = !!(flags[idx_west] & CELL_FLUID);
+        const double epsilon_north = !!(flags[idx_south] & CELL_FLUID);
+        const double epsilon_south = !!(flags[idx_north] & CELL_FLUID);
+
+        const double x_residual = (
+            epsilon_east * (pressure[idx_east] - pressure[idx_central]) -
+            epsilon_west * (pressure[idx_central] - pressure[idx_west])
+        ) * step_sq;
+
+        const double y_residual = (
+            epsilon_north * (pressure[idx_south] - pressure[idx_central]) -
+            epsilon_south * (pressure[idx_central] - pressure[idx_north])
+        ) * step_sq;
+
+        residual_dest[idx_central] = x_residual + y_residual - poisson_source[idx_central];
+        fluid_dest[idx_central] = true;
+    } else {
+        residual_dest[idx_central] = 0.0;
+        fluid_dest[idx_central] = false;
+    }
+}
+
+template<class T>
+__global__ void reduce_sum_kernel(const T* const input, T* const output, const std::size_t input_size)
+{
+    extern __shared__ int shared_memory[];
+    T* shared_data = reinterpret_cast<T*>(shared_memory);
+
+    const unsigned int thread_idx = threadIdx.x;
+    const unsigned int input_idx = blockIdx.x * blockDim.x * 2 + thread_idx;
+
+    // Fold the first two elements into a sum and copy to shared memory.
+    if (input_idx + blockDim.x < input_size)
+        shared_data[thread_idx] = input[input_idx] + input[input_idx + blockDim.x];
+    else if (input_idx < input_size)
+        shared_data[thread_idx] = input[input_idx];
+    else
+        shared_data[thread_idx] = 0;
+
+    __syncthreads();
+
+    // Do the reduction in shared memory.
+    for (unsigned int stride = blockDim.x >> 1; stride > 0; stride >>= 1) {
+        if (thread_idx < stride)
+            shared_data[thread_idx] += shared_data[thread_idx + stride];
+        __syncthreads();
+    }
+
+    // Write the result for this block to global memory.
+    if (thread_idx == 0)
+        output[blockIdx.x] = shared_data[0];
+}
+
+__global__ void perform_sor_cycle(const Metadata * const metadata, compute_t * const pressure,
+    const compute_t * const poisson_source, const cell_flags * const flags)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
+
+    if (idx.x > metadata->extents.x - 1 || idx.y > metadata->extents.y - 1)
+        return;
+    
+    const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
+    static constexpr compute_t omega = 1.7; // TODO move
+    const compute_t r_step_sq = 1.0 / (metadata->resolution * metadata->resolution);
+
+    compute_t weight;
+    compute_t x_spatial;
+    compute_t y_spatial;
+
+    if ((flags[idx_central] & CELL_FLUID_ALL) == CELL_FLUID_ALL) {
+
+        weight = omega / (4 * r_step_sq);
+        x_spatial = (pressure[idx_central + 1] + pressure[idx_central - 1]) * r_step_sq;
+        y_spatial = (pressure[idx_central + metadata->extents.x] +
+            pressure[idx_central - metadata->extents.x]) * r_step_sq;
+
+    } else if (flags[idx_central] & CELL_FLUID) {
+
+        const compute_t epsilon_east = !!(flags[idx_central + 1] & CELL_FLUID);
+        const compute_t epsilon_west = !!(flags[idx_central - 1] & CELL_FLUID);
+        const compute_t epsilon_north = !!(flags[idx_central - metadata->extents.x] & CELL_FLUID);
+        const compute_t epsilon_south = !!(flags[idx_central + metadata->extents.x] & CELL_FLUID);
+
+        weight = omega / ((epsilon_east + epsilon_west) * r_step_sq + (epsilon_north + epsilon_south) *
+            r_step_sq);
+
+        x_spatial = (
+            pressure[idx_central + 1] * epsilon_west +
+            pressure[idx_central - 1] * epsilon_east) * r_step_sq;
+
+        y_spatial = (
+            pressure[idx_central + metadata->extents.x] * epsilon_south +
+            pressure[idx_central - metadata->extents.x] * epsilon_north) * r_step_sq;
+    } else
+        // Nothing to do for non-fluid cells.
+        return;
+
+    pressure[idx_central] = (1.0 - omega) * pressure[idx_central] + weight *
+        (x_spatial + y_spatial - poisson_source[idx_central]);
+}
+
 }
 
 DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
@@ -409,6 +534,14 @@ DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
     SafeCUDA(cudaMalloc(&pressure, allocation_extent_bytes));
     SafeCUDA(cudaMalloc(&poisson_source, allocation_extent_bytes));
     SafeCUDA(cudaMalloc(&flags, sizeof(cell_flags) * allocation_extent));
+
+    // TODO: reduction array output sizes can be reduced by a factor of block count.
+
+    SafeCUDA(cudaMalloc(&local_residuals_input, allocation_extent_bytes));
+    SafeCUDA(cudaMalloc(&fluid_cell_markers_input, sizeof(unsigned int) * allocation_extent));
+    SafeCUDA(cudaMalloc(&local_residuals_output, sizeof(compute_t) * allocation_extent));
+    SafeCUDA(cudaMalloc(&fluid_cell_markers_output, sizeof(unsigned int) * allocation_extent));
+
     SafeCUDA(cudaMalloc(&v_body_bounds, sizeof(bounds) * this->metadata->extents.x));
 
     const Metadata * const metadata_ro_ptr = this->metadata.get();
@@ -428,6 +561,12 @@ DeviceRegion::~DeviceRegion() noexcept
      */
 
     cudaFree(v_body_bounds);
+
+    cudaFree(fluid_cell_markers_output);
+    cudaFree(local_residuals_output);
+    cudaFree(fluid_cell_markers_input);
+    cudaFree(local_residuals_input);
+
     cudaFree(flags);
     cudaFree(poisson_source);
     cudaFree(pressure);
@@ -460,11 +599,62 @@ void DeviceRegion::compute_poisson_source() const
         tentative_velocity_x, tentative_velocity_y, pressure);
 }
 
+compute_t DeviceRegion::compute_residual_norm_sq() const
+{
+    kernels::compute_local_residuals<<<grid_size, block_size>>>(metadata.get(), pressure, poisson_source, flags,
+        local_residuals_input, fluid_cell_markers_input);
+
+    constexpr std::size_t block_count = block_size.x * block_size.y * block_size.z;
+    const compute_t residual_sum = reduce_sum(local_residuals_input, metadata->allocation_count, local_residuals_output,
+        block_count);
+    const unsigned int fluid_cell_count = reduce_sum(fluid_cell_markers_input, metadata->allocation_count,
+        fluid_cell_markers_output, block_count);
+
+    return residual_sum / fluid_cell_count;
+}
+
+void DeviceRegion::perform_sor_cycle() const
+{
+    kernels::perform_sor_cycle<<<grid_size, block_size>>>(metadata.get(), pressure, poisson_source, flags);
+}
+
 void DeviceRegion::populate_host_region(const HostRegion &host_region) const
 {
     host_region.receive_velocity_x(velocity_x);
     host_region.receive_velocity_y(velocity_y);
     host_region.receive_pressure(pressure);
+}
+
+template<class T>
+T DeviceRegion::reduce_sum(T * const input, const std::size_t value_count, T * const output,
+    const std::size_t block_count) const
+{
+    std::size_t remaining_blocks = value_count;
+
+    T * reduction_input = input;
+    T * reduction_output = output;
+
+    for (std::size_t round_idx = 0; remaining_blocks > 1; ++round_idx) {
+        const std::size_t input_size = remaining_blocks;
+        remaining_blocks = (input_size + (2 * block_count - 1)) / (2 * block_count);
+
+        if (input_size != 1) {
+            kernels::reduce_sum_kernel<<<remaining_blocks, block_count, block_count * sizeof(T)>>>(reduction_input,
+                reduction_output, input_size);
+
+            if (round_idx & 1) {
+                reduction_input = input;
+                reduction_output = output;
+            } else {
+                reduction_input = output;
+                reduction_output = input;
+            }
+        }
+    }
+
+    T sum_value;
+    SafeCUDA(cudaMemcpy(&sum_value, reduction_input, sizeof(T), cudaMemcpyDeviceToHost));
+    return sum_value;
 }
 
 } // namespace owd

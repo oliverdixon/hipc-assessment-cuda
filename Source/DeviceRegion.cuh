@@ -35,9 +35,16 @@ public:
 
     void compute_poisson_source() const;
 
+    compute_t compute_residual_norm_sq() const;
+
+    void perform_sor_cycle() const;
+
     void populate_host_region(const HostRegion& host_region) const;
 
 private:
+    template<class T>
+    T reduce_sum(T* input, std::size_t value_count, T* output, std::size_t block_count) const;
+
     std::shared_ptr<Metadata> metadata;
 
     static constexpr dim3 block_size = { 8, 8, 1 }; // TODO: dynamic block size with cudaOccupancyMaxPotentialBlockSize
@@ -54,6 +61,12 @@ private:
     compute_t * pressure = nullptr;
     compute_t * poisson_source = nullptr;
     cell_flags * flags = nullptr;
+
+    compute_t * local_residuals_input = nullptr;
+    compute_t * local_residuals_output = nullptr;
+    unsigned int * fluid_cell_markers_input = nullptr;
+    unsigned int * fluid_cell_markers_output = nullptr;
+
     bounds * v_body_bounds = nullptr;
 };
 
