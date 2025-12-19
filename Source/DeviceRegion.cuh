@@ -27,6 +27,14 @@ public:
     DeviceRegion(DeviceRegion &&) noexcept = delete;
     DeviceRegion(const DeviceRegion &) noexcept = delete;
 
+    void apply_boundary_conditions() const;
+
+    void update_velocities() const;
+
+    void compute_tentative_velocities() const;
+
+    void compute_poisson_source() const;
+
     void populate_host_region(const HostRegion& host_region) const;
 
 private:

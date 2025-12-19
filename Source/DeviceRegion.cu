@@ -21,10 +21,7 @@ __global__ void set_body_bounds(const Metadata * const metadata, bounds * const 
     const unsigned int resolution = metadata->resolution;
     const compute_t x = static_cast<compute_t>(x_idx) / resolution - 0.5;
 
-    bounds bounds = {
-        .begin = 0,
-        .end = 0
-    };
+    bounds bounds;
 
     if (x >= 0.0 || x <= 1.0) {
         const compute_t maximum_camber = metadata->naca_specifier.maximum_camber / 100.0;
@@ -103,6 +100,295 @@ __global__ void set_neighbouring_flags(const Metadata * const metadata, cell_fla
     }
 }
 
+__global__ void apply_boundary_conditions(const Metadata * const metadata, compute_t * const velocity_x,
+    compute_t * const velocity_y, const cell_flags * const flags)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
+
+    if (idx.x >= metadata->extents.x || idx.y >= metadata->extents.y)
+        return;
+
+    const indexer_t v_basis = metadata->extents.x * idx.y;
+
+    if (idx.x == 0) {
+        // Fluid freely flows in from the west
+        velocity_x[v_basis] = velocity_x[v_basis + 1];
+        velocity_y[v_basis] = velocity_y[v_basis + 1];
+    } else if (idx.x == metadata->extents.x - 1) {
+        // Fluid freely flows out to the east
+        velocity_x[v_basis + idx.x - 1] = velocity_x[v_basis + idx.x - 2];
+        velocity_y[v_basis + idx.x] = velocity_x[v_basis + idx.x - 1];
+    }
+    
+    /*
+     * At the north and south boundaries, the vertical velocity approaches zero and fluid flows freely on the
+     * horizontal.
+     */
+    if (idx.y == 0) {
+        const indexer_t north_idx_basis = idx.x;
+        velocity_x[north_idx_basis] = velocity_x[north_idx_basis + metadata->extents.x];
+        velocity_y[north_idx_basis] = 0.0;
+    } else if (idx.y == metadata->extents.y - 1) {
+        const indexer_t south_idx_basis = idx.x + metadata->extents.x * (metadata->extents.y - 1);
+        velocity_x[south_idx_basis] = velocity_x[south_idx_basis - metadata->extents.x];
+        velocity_y[south_idx_basis - metadata->extents.x] = 0.0;
+    }
+    
+    if (flags[v_basis + idx.x] & CELL_FLUID_ALL) {
+        const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
+
+        const indexer_t idx_north = idx.x + metadata->extents.x * (idx.y - 1);
+        const indexer_t idx_south = idx.x + metadata->extents.x * (idx.y + 1);
+        const indexer_t idx_west = idx.x - 1 + metadata->extents.x * idx.y;
+        const indexer_t idx_east = idx.x + 1 + metadata->extents.x * idx.y;
+
+        const indexer_t idx_northeast = idx.x + 1 + metadata->extents.x * (idx.y - 1);
+        const indexer_t idx_southwest = idx.x - 1 + metadata->extents.x * (idx.y + 1);
+        const indexer_t idx_northwest = idx.x - 1 + metadata->extents.x * (idx.y - 1);
+
+        switch (flags[v_basis + idx.x]) {
+        case CELL_FLUID_NORTH:
+            velocity_y[idx_central] = 0.0;
+            velocity_x[idx_central] = -velocity_x[idx_south];
+            velocity_x[idx_west] = -velocity_x[idx_southwest];
+            break;
+        case CELL_FLUID_EAST:
+            velocity_x[idx_central] = 0.0;
+            velocity_y[idx_central] = -velocity_y[idx_east];
+            velocity_y[idx_north] = -velocity_y[idx_northeast];
+            break;
+        case CELL_FLUID_SOUTH:
+            velocity_y[idx_north] = 0.0;
+            velocity_x[idx_central] = -velocity_x[idx_north];
+            velocity_x[idx_west] = -velocity_x[idx_northwest];
+            break;
+        case CELL_FLUID_WEST:
+            velocity_x[idx_west] = 0.0;
+            velocity_y[idx_central] = -velocity_y[idx_west];
+            velocity_y[idx_north] = -velocity_y[idx_northwest];
+            break;
+        case CELL_FLUID_NORTHEAST:
+            velocity_y[idx_central] = 0.0;
+            velocity_x[idx_central] = 0.0;
+            velocity_y[idx_north] = -velocity_y[idx_northeast];
+            velocity_x[idx_west] = -velocity_x[idx_southwest];
+            break;
+        case CELL_FLUID_SOUTHEAST:
+            velocity_y[idx_north] = 0.0;
+            velocity_x[idx_central] = 0.0;
+            velocity_y[idx_central] = -velocity_y[idx_east];
+            velocity_x[idx_west] = -velocity_x[idx_northwest];
+            break;
+        case CELL_FLUID_SOUTHWEST:
+            velocity_y[idx_north] = 0.0;
+            velocity_x[idx_west] = 0.0;
+            velocity_y[idx_central] = -velocity_y[idx_west];
+            velocity_x[idx_central] = -velocity_x[idx_north];
+            break;
+        case CELL_FLUID_NORTHWEST:
+            velocity_y[idx_central] = 0.0;
+            velocity_x[idx_west] = 0.0;
+            velocity_y[idx_north] = -velocity_y[idx_northwest];
+            velocity_x[idx_central] = -velocity_x[idx_south];
+            break;
+        default:;
+        }
+    }
+
+    if (idx.x == 0) {
+        /*
+         * If we're on a western boundary, fix the western-edge velocities such that there is a continual flow of fluid
+         * into the simulation space.
+         */
+
+        const indexer_t west_anchored_idx = metadata->extents.x * idx.y;
+        velocity_x[west_anchored_idx] = metadata->initial_velocity_x;
+        velocity_y[west_anchored_idx] = 2 * metadata->initial_velocity_y -
+            velocity_y[west_anchored_idx + 1];
+    }
+}
+
+__global__ void update_velocities(const Metadata * const metadata, compute_t * const velocity_x,
+    compute_t * const velocity_y, const compute_t * const tentative_velocity_x,
+    const compute_t * const tentative_velocity_y, const compute_t * const pressure, const cell_flags * const flags)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
+
+    if (idx.x >= metadata->extents.x || idx.y >= metadata->extents.y)
+        return;
+
+    const compute_t pressure_diff_factor = metadata->timestep_duration * metadata->resolution;
+    const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
+
+    if (flags[idx_central] & CELL_FLUID && flags[idx_central + 1] & CELL_FLUID) {
+
+        // TODO: might need to check the bounds here?
+
+        velocity_x[idx_central] = tentative_velocity_x[idx_central] -
+            (pressure[idx_central + 1] - pressure[idx_central]) * pressure_diff_factor;
+
+        velocity_y[idx_central] = tentative_velocity_y[idx_central] -
+            (pressure[idx_central + metadata->extents.x] - pressure[idx_central]) * pressure_diff_factor;
+    }
+}
+
+__global__ void compute_tentative_velocities(const Metadata * const metadata, const compute_t * const velocity_x,
+    const compute_t * const velocity_y, compute_t * const tentative_velocity_x, compute_t * const tentative_velocity_y,
+    const cell_flags * const flags)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
+
+    // TODO maybe this condition is too restrictive.
+    if (idx.x < 1 || idx.x >= metadata->extents.x - 1 || idx.y < 1 || idx.y >= metadata->extents.y - 1)
+        return;
+
+    static constexpr compute_t reynolds = 500.0;
+    static constexpr double gamma = 0.9; // Upwind differencing factor in PDE discretisation
+
+    const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
+
+    const indexer_t idx_north = idx.x + metadata->extents.x * (idx.y - 1);
+    const indexer_t idx_south = idx.x + metadata->extents.x * (idx.y + 1);
+    const indexer_t idx_west = idx.x - 1 + metadata->extents.x * idx.y;
+    const indexer_t idx_east = idx.x + 1 + metadata->extents.x * idx.y;
+
+    const indexer_t idx_northeast = idx.x + 1 + metadata->extents.x * (idx.y - 1);
+    const indexer_t idx_southwest = idx.x - 1 + metadata->extents.x * (idx.y + 1);
+
+    const compute_t quarter_resolution = metadata->resolution / 4.0;
+    const compute_t sq_resolution = metadata->resolution * metadata->resolution;
+
+    // TODO: check this. Why only checking east when else comment indicates "adjacent cells"?
+    if (flags[idx_central] & CELL_FLUID && flags[idx_east] & CELL_FLUID) {
+        const double self_advection_x =
+            (
+                (velocity_x[idx_central] + velocity_x[idx_east]) *
+                (velocity_x[idx_central] + velocity_x[idx_east]) +
+                gamma * fabs(velocity_x[idx_central] + velocity_x[idx_east]) *
+                (velocity_x[idx_central] - velocity_x[idx_east]) -
+                (velocity_x[idx_west] + velocity_x[idx_central]) *
+                (velocity_x[idx_west] + velocity_x[idx_central]) -
+                gamma * fabs(velocity_x[idx_west] + velocity_x[idx_central]) *
+                (velocity_x[idx_west] - velocity_x[idx_central])
+            ) * quarter_resolution;
+
+        const double cross_advection_y =
+            (
+                (velocity_y[idx_central] + velocity_y[idx_east]) *
+                (velocity_x[idx_central] + velocity_x[idx_south]) +
+                gamma * fabs(velocity_y[idx_central] + velocity_y[idx_east]) *
+                (velocity_x[idx_central] - velocity_x[idx_south]) -
+                (velocity_y[idx_north] + velocity_y[idx_northeast]) *
+                (velocity_x[idx_north] + velocity_x[idx_central]) -
+                gamma * fabs(velocity_y[idx_north] + velocity_y[idx_northeast]) *
+                (velocity_x[idx_north] - velocity_x[idx_central])
+            ) * quarter_resolution;
+
+        const double diffusion =
+            (
+                velocity_x[idx_east] -
+                2.0 * velocity_x[idx_central] +
+                velocity_x[idx_west] +
+                velocity_x[idx_south] -
+                2.0 * velocity_x[idx_central] +
+                velocity_x[idx_north]
+            ) * sq_resolution;
+
+        tentative_velocity_x[idx_central] = velocity_x[idx_central] + metadata->timestep_duration *
+            (diffusion / reynolds - self_advection_x - cross_advection_y);
+    } else
+        // If both adjacent cells are not fluids, the velocity is unchanged.
+        tentative_velocity_x[idx_central] = velocity_x[idx_central];
+
+    if (flags[idx_central] & CELL_FLUID && flags[idx_south] & CELL_FLUID) {
+        const double cross_advection_x =
+            (
+                (velocity_x[idx_central] + velocity_x[idx_south]) *
+                (velocity_y[idx_central] + velocity_y[idx_east]) +
+                gamma * fabs(velocity_x[idx_central] + velocity_x[idx_south]) *
+                (velocity_y[idx_central] - velocity_y[idx_east]) -
+                (velocity_x[idx_west] + velocity_x[idx_southwest]) *
+                (velocity_y[idx_west] + velocity_y[idx_central]) -
+                gamma * fabs(velocity_x[idx_west] + velocity_x[idx_southwest]) *
+                (velocity_y[idx_west] - velocity_y[idx_central])
+            ) * quarter_resolution;
+
+        const double self_advection_y =
+            (
+                (velocity_y[idx_central] + velocity_y[idx_south]) *
+                (velocity_y[idx_central] + velocity_y[idx_south]) +
+                gamma * fabs(velocity_y[idx_central] + velocity_y[idx_south]) *
+                (velocity_y[idx_central] - velocity_y[idx_south]) -
+                (velocity_y[idx_north] + velocity_y[idx_central]) *
+                (velocity_y[idx_north] + velocity_y[idx_central]) -
+                gamma * fabs(velocity_y[idx_north] + velocity_y[idx_central]) *
+                (velocity_y[idx_north] - velocity_y[idx_central])
+            ) * quarter_resolution;
+
+        const double diffusion =
+            (
+                velocity_y[idx_east] -
+                2.0 * velocity_y[idx_central] +
+                velocity_y[idx_west] +
+                velocity_y[idx_south] -
+                2.0 * velocity_y[idx_central] +
+                velocity_y[idx_north]
+            ) * sq_resolution;
+
+        tentative_velocity_y[idx_central] = velocity_y[idx_central] + metadata->timestep_duration *
+            (diffusion / reynolds - cross_advection_x - self_advection_y);
+
+    } else
+        // If both adjacent cells are not fluids, the velocity is unchanged.
+        tentative_velocity_y[idx_central] = velocity_y[idx_central];
+}
+
+__global__ void compute_poisson_source(const Metadata * const metadata, const compute_t * const velocity_x,
+    const compute_t * const velocity_y, compute_t * const tentative_velocity_x, compute_t * const tentative_velocity_y,
+    compute_t * const pressure)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
+
+    if (idx.x >= metadata->extents.x || idx.y >= metadata->extents.y)
+        return;
+
+    if (idx.x == 0) {
+        const indexer_t west_anchored_idx = metadata->extents.x * idx.y;
+        tentative_velocity_x[west_anchored_idx] = velocity_x[west_anchored_idx];
+        pressure[west_anchored_idx] = pressure[west_anchored_idx + 1];
+    }
+
+    else if (idx.x == metadata->extents.x - 1) {
+        const indexer_t east_anchored_idx = metadata->extents.x * idx.y + metadata->extents.x;
+        tentative_velocity_x[east_anchored_idx] = velocity_x[east_anchored_idx];
+        pressure[east_anchored_idx] = pressure[east_anchored_idx - 1];
+    }
+
+    if (idx.y == 0) {
+        const indexer_t north_anchored_idx = idx.x;
+        tentative_velocity_y[north_anchored_idx] = velocity_y[north_anchored_idx];
+        pressure[north_anchored_idx] = pressure[north_anchored_idx + metadata->extents.x];
+    }
+
+    else if (idx.y == metadata->extents.y - 1) {
+        const indexer_t south_anchored_idx = metadata->extents.x * idx.y;
+        tentative_velocity_y[south_anchored_idx] = velocity_y[south_anchored_idx];
+        pressure[south_anchored_idx] = pressure[south_anchored_idx - metadata->extents.x];
+    }
+}
+
 }
 
 DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
@@ -127,6 +413,7 @@ DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
 
     const Metadata * const metadata_ro_ptr = this->metadata.get();
 
+    // Initialise the problem grids to a suitable initial state for the iterative solvers.
     kernels::set_body_bounds<<<1, this->metadata->extents.x>>>(metadata_ro_ptr, v_body_bounds);
     kernels::set_boundaries<<<grid_size, block_size>>>(metadata_ro_ptr, velocity_x, velocity_y, pressure, flags,
         v_body_bounds);
@@ -148,6 +435,29 @@ DeviceRegion::~DeviceRegion() noexcept
     cudaFree(tentative_velocity_x);
     cudaFree(velocity_y);
     cudaFree(velocity_x);
+}
+
+void DeviceRegion::apply_boundary_conditions() const
+{
+    kernels::apply_boundary_conditions<<<grid_size, block_size>>>(metadata.get(), velocity_x, velocity_y, flags);
+}
+
+void DeviceRegion::update_velocities() const
+{
+    kernels::update_velocities<<<grid_size, block_size>>>(metadata.get(), velocity_x, velocity_y, tentative_velocity_x,
+        tentative_velocity_y, pressure, flags);
+}
+
+void DeviceRegion::compute_tentative_velocities() const
+{
+    kernels::compute_tentative_velocities<<<grid_size, block_size>>>(metadata.get(), velocity_x, velocity_y,
+        tentative_velocity_x, tentative_velocity_y, flags);
+}
+
+void DeviceRegion::compute_poisson_source() const
+{
+    kernels::compute_poisson_source<<<grid_size, block_size>>>(metadata.get(), velocity_x, velocity_y,
+        tentative_velocity_x, tentative_velocity_y, pressure);
 }
 
 void DeviceRegion::populate_host_region(const HostRegion &host_region) const

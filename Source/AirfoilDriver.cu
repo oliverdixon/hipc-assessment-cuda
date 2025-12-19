@@ -3,6 +3,7 @@
 //
 
 #include <fstream>
+#include <iostream>
 
 #include "DeviceRegion.cuh"
 #include "HostRegion.cuh"
@@ -34,7 +35,36 @@ int main()
     const auto metadata = owd::metadata_create();
     const owd::DeviceRegion device_region(metadata);
 
-    // Do work...
+    static constexpr compute_t max_simulation_runtime = 1.0;
+    static constexpr indexer_t sor_max_iterations = 100;
+    static constexpr compute_t sor_residual_epsilon = 0.001;
+    static constexpr indexer_t output_freq = 100;
+
+    compute_t simulation_runtime = 0.0;
+    indexer_t step_iteration = 0;
+
+    while (simulation_runtime < max_simulation_runtime) {
+        device_region.apply_boundary_conditions();
+        device_region.compute_tentative_velocities();
+        device_region.compute_poisson_source();
+
+        compute_t residual = std::numeric_limits<compute_t>::max();
+        for (indexer_t sor_iteration = 0; sor_iteration < sor_max_iterations; ++sor_iteration) {
+            break; // TODO: remove
+
+            // TODO: SOR cycle
+            // TODO: compute L_2 norm of residual
+
+            if (std::fabs(residual) < sor_residual_epsilon * sor_residual_epsilon)
+                break; // SOR has converged.
+        }
+
+        device_region.update_velocities();
+        simulation_runtime += metadata->timestep_duration;
+        if (step_iteration % output_freq == 0)
+            std::cout << "Step: " << step_iteration << ", Time: " << simulation_runtime << ", Residual: " << residual <<
+                std::endl;
+    }
 
     const owd::HostRegion host_region(metadata);
     device_region.populate_host_region(host_region);

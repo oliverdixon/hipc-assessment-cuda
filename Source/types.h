@@ -5,22 +5,25 @@
 #ifndef HIPC_ASSESSMENT_TYPES_H
 #define HIPC_ASSESSMENT_TYPES_H
 
-#include <cassert>
-#include <cstdio>
-
 typedef double compute_t;
 typedef unsigned int indexer_t;
 
 struct bounds
 {
-    indexer_t begin;
-    indexer_t end;
+    __host__ __device__ bounds() { }
+
+    __host__ __device__ bounds(const indexer_t begin, const indexer_t end) noexcept :
+        begin(begin),
+        end(end)
+    { }
+
+    indexer_t begin = 0;
+    indexer_t end = 0;
 };
 
 struct dim2
 {
-    __host__ __device__
-    dim2(const indexer_t x, const indexer_t y) noexcept :
+    __host__ __device__ dim2(const indexer_t x, const indexer_t y) noexcept :
         x(x),
         y(y)
     { }
@@ -31,7 +34,7 @@ struct dim2
 
 struct compute_dim2
 {
-    compute_dim2(const compute_t x, const compute_t y) noexcept :
+    __host__ __device__ compute_dim2(const compute_t x, const compute_t y) noexcept :
         x(x),
         y(y)
     { }
