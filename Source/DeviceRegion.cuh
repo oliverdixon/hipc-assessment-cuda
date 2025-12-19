@@ -39,14 +39,14 @@ private:
     static constexpr compute_t initial_velocity_y = 0.0;
     static constexpr compute_t initial_pressure = 0.0;
 
-    compute_t * velocity_x;
-    compute_t * velocity_y;
-    compute_t * tentative_velocity_x;
-    compute_t * tentative_velocity_y;
-    compute_t * pressure;
-    compute_t * poisson_source;
-    cell_flags * flags;
-    bounds * v_body_bounds;
+    compute_t * velocity_x = nullptr;
+    compute_t * velocity_y = nullptr;
+    compute_t * tentative_velocity_x = nullptr;
+    compute_t * tentative_velocity_y = nullptr;
+    compute_t * pressure = nullptr;
+    compute_t * poisson_source = nullptr;
+    cell_flags * flags = nullptr;
+    bounds * v_body_bounds = nullptr;
 };
 
 } // namespace owd

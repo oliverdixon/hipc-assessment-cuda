@@ -64,9 +64,9 @@ __global__ void set_boundaries(const Metadata * const metadata, compute_t * cons
     if (idx.x < metadata->extents.x && idx.y < metadata->extents.y) {
         const indexer_t array_idx = idx.x + metadata->extents.x * idx.y;
 
-        velocity_x[array_idx] = metadata->initial_velocity_x;
-        velocity_y[array_idx] = metadata->initial_velocity_y;
-        pressure[array_idx] = metadata->initial_pressure;
+        velocity_x[array_idx] = Metadata::initial_velocity_x;
+        velocity_y[array_idx] = Metadata::initial_velocity_y;
+        pressure[array_idx] = Metadata::initial_pressure;
 
         const bounds& body_bounds = v_body_bounds[idx.x];
 
@@ -108,8 +108,8 @@ __global__ void set_neighbouring_flags(const Metadata * const metadata, cell_fla
 DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
     metadata(std::move(metadata)),
     grid_size(
-        std::ceil(this->metadata->extents.x / block_size.x),
-        std::ceil(this->metadata->extents.y / block_size.y),
+        std::ceil(static_cast<float>(this->metadata->extents.x) / block_size.x),
+        std::ceil(static_cast<float>(this->metadata->extents.y) / block_size.y),
         1
     )
 {

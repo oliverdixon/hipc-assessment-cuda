@@ -63,14 +63,14 @@ void HostRegion::vtk_serialise(std::ostream &ostream) const
     ostream << "\t\t\t\t<DataArray type=\"Float64\" name=\"X\" format=\"ascii\" RangeMin=\"0\" RangeMax=\"" <<
         metadata->problem_size.x << "\">\n";
 
-    for (indexer_t h_idx = 0; h_idx <= h_pixel_count; ++h_idx)
+    for (indexer_t h_idx = 0; h_idx < h_pixel_count; ++h_idx)
         ostream << static_cast<compute_t>(h_idx) / resolution << ' ';
 
     ostream << "\n\t\t\t\t</DataArray>\n";
     ostream << "\t\t\t\t<DataArray type=\"Float64\" name=\"Y\" format=\"ascii\" RangeMin=\"0\" RangeMax=\"" <<
         metadata->problem_size.y << "\">\n";
 
-    for (indexer_t v_idx = 0; v_idx <= v_pixel_count; ++v_idx)
+    for (indexer_t v_idx = 0; v_idx < v_pixel_count; ++v_idx)
         ostream << static_cast<compute_t>(v_idx) / resolution << ' ';
 
     ostream << "\n\t\t\t\t</DataArray>\n";

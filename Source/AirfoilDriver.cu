@@ -17,14 +17,14 @@ static std::shared_ptr<Metadata> metadata_create()
     SafeCUDA(cudaMallocManaged(&metadata, sizeof(Metadata)));
     new (metadata) Metadata(128, Metadata::NACASpecifier(2, 4, 12), compute_dim2(4.0, 1.0), 0.003);
 
-    return std::shared_ptr<Metadata>(
+    return {
         metadata,
         [](Metadata * const target)
         {
             target->~Metadata();
             cudaFree(target);
         }
-    );
+    };
 }
 
 }

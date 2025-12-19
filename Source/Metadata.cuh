@@ -29,8 +29,8 @@ struct Metadata
     Metadata(const unsigned int resolution, const NACASpecifier naca_specifier, const compute_dim2 problem_size,
             const compute_t timestep_duration) noexcept :
         extents(
-            std::ceil(problem_size.x * resolution) + 2,
-            std::ceil(problem_size.y * resolution) + 2
+            static_cast<indexer_t>(std::ceil(problem_size.x * resolution) + 2),
+            static_cast<indexer_t>(std::ceil(problem_size.y * resolution) + 2)
         ),
         resolution(resolution),
         naca_specifier(naca_specifier),
