@@ -35,7 +35,7 @@ public:
 
     void compute_poisson_source() const;
 
-    compute_t compute_residual_norm_sq() const;
+    [[nodiscard]] compute_t compute_residual_norm_sq() const;
 
     void perform_sor_cycle() const;
 

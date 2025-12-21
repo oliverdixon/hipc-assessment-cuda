@@ -93,9 +93,9 @@ __global__ void set_neighbouring_flags(const Metadata * const metadata, cell_fla
             flags[flat_idx] = static_cast<cell_flags>(flags[flat_idx] | CELL_FLUID_WEST);
         if (idx.x < metadata->extents.x - 1 && flags[flat_idx + 1] & CELL_FLUID)
             flags[flat_idx] = static_cast<cell_flags>(flags[flat_idx] | CELL_FLUID_EAST);
-        if (idx.y > 0 && flags[flat_idx - row_increment] & CELL_FLUID)
-            flags[flat_idx] = static_cast<cell_flags>(flags[flat_idx] | CELL_FLUID_SOUTH);
         if (idx.y < metadata->extents.y - 1 && flags[flat_idx + row_increment] & CELL_FLUID)
+            flags[flat_idx] = static_cast<cell_flags>(flags[flat_idx] | CELL_FLUID_SOUTH);
+        if (idx.y > 0 && flags[flat_idx - row_increment] & CELL_FLUID)
             flags[flat_idx] = static_cast<cell_flags>(flags[flat_idx] | CELL_FLUID_NORTH);
     }
 }
@@ -137,7 +137,7 @@ __global__ void apply_boundary_conditions(const Metadata * const metadata, compu
         velocity_y[south_idx_basis - metadata->extents.x] = 0.0;
     }
     
-    if (flags[v_basis + idx.x] & CELL_FLUID_ALL) {
+    if ((flags[v_basis + idx.x] & CELL_FLUID_ALL) == CELL_FLUID_ALL) {
         const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
 
         const indexer_t idx_north = idx.x + metadata->extents.x * (idx.y - 1);
@@ -268,7 +268,7 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
 
     // TODO: check this. Why only checking east when else comment indicates "adjacent cells"?
     if (flags[idx_central] & CELL_FLUID && flags[idx_east] & CELL_FLUID) {
-        const double self_advection_x =
+        const compute_t self_advection_x =
             (
                 (velocity_x[idx_central] + velocity_x[idx_east]) *
                 (velocity_x[idx_central] + velocity_x[idx_east]) +
@@ -280,7 +280,7 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
                 (velocity_x[idx_west] - velocity_x[idx_central])
             ) * quarter_resolution;
 
-        const double cross_advection_y =
+        const compute_t cross_advection_y =
             (
                 (velocity_y[idx_central] + velocity_y[idx_east]) *
                 (velocity_x[idx_central] + velocity_x[idx_south]) +
@@ -292,7 +292,7 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
                 (velocity_x[idx_north] - velocity_x[idx_central])
             ) * quarter_resolution;
 
-        const double diffusion =
+        const compute_t diffusion =
             (
                 velocity_x[idx_east] -
                 2.0 * velocity_x[idx_central] +
@@ -309,7 +309,7 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
         tentative_velocity_x[idx_central] = velocity_x[idx_central];
 
     if (flags[idx_central] & CELL_FLUID && flags[idx_south] & CELL_FLUID) {
-        const double cross_advection_x =
+        const compute_t cross_advection_x =
             (
                 (velocity_x[idx_central] + velocity_x[idx_south]) *
                 (velocity_y[idx_central] + velocity_y[idx_east]) +
@@ -321,7 +321,7 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
                 (velocity_y[idx_west] - velocity_y[idx_central])
             ) * quarter_resolution;
 
-        const double self_advection_y =
+        const compute_t self_advection_y =
             (
                 (velocity_y[idx_central] + velocity_y[idx_south]) *
                 (velocity_y[idx_central] + velocity_y[idx_south]) +
@@ -333,7 +333,7 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
                 (velocity_y[idx_north] - velocity_y[idx_central])
             ) * quarter_resolution;
 
-        const double diffusion =
+        const compute_t diffusion =
             (
                 velocity_y[idx_east] -
                 2.0 * velocity_y[idx_central] +
@@ -353,7 +353,7 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
 
 __global__ void compute_poisson_source(const Metadata * const metadata, const compute_t * const velocity_x,
     const compute_t * const velocity_y, compute_t * const tentative_velocity_x, compute_t * const tentative_velocity_y,
-    compute_t * const pressure)
+    compute_t * const pressure, compute_t * const poisson_source, const cell_flags * const flags)
 {
     const dim2 idx{
         blockIdx.x * blockDim.x + threadIdx.x,
@@ -385,6 +385,18 @@ __global__ void compute_poisson_source(const Metadata * const metadata, const co
         const indexer_t south_anchored_idx = metadata->extents.x * idx.y;
         tentative_velocity_y[south_anchored_idx] = velocity_y[south_anchored_idx];
         pressure[south_anchored_idx] = pressure[south_anchored_idx - metadata->extents.x];
+    }
+
+    const auto idx_central = idx.x + idx.y * metadata->extents.x;
+
+    if (flags[idx_central] & CELL_FLUID) {
+        const compute_t x_tent_vel_diff = (tentative_velocity_x[idx_central] - tentative_velocity_x[idx_central - 1]) *
+            metadata->resolution;
+
+        const compute_t y_tent_vel_diff = (tentative_velocity_y[idx_central] -
+            tentative_velocity_y[idx_central + metadata->extents.x]) * metadata->resolution;
+
+        poisson_source[idx_central] = (x_tent_vel_diff + y_tent_vel_diff) / metadata->timestep_duration;
     }
 }
 
@@ -491,10 +503,10 @@ __global__ void perform_sor_cycle(const Metadata * const metadata, compute_t * c
 
     } else if (flags[idx_central] & CELL_FLUID) {
 
-        const compute_t epsilon_east = !!(flags[idx_central + 1] & CELL_FLUID);
-        const compute_t epsilon_west = !!(flags[idx_central - 1] & CELL_FLUID);
-        const compute_t epsilon_north = !!(flags[idx_central - metadata->extents.x] & CELL_FLUID);
-        const compute_t epsilon_south = !!(flags[idx_central + metadata->extents.x] & CELL_FLUID);
+        const compute_t epsilon_east = flags[idx_central + 1] & CELL_FLUID ? 1.0 : 0.0;
+        const compute_t epsilon_west = flags[idx_central - 1] & CELL_FLUID ? 1.0 : 0.0;
+        const compute_t epsilon_north = flags[idx_central - metadata->extents.x] & CELL_FLUID ? 1.0 : 0.0;
+        const compute_t epsilon_south = flags[idx_central + metadata->extents.x] & CELL_FLUID ? 1.0 : 0.0;
 
         weight = omega / ((epsilon_east + epsilon_west) * r_step_sq + (epsilon_north + epsilon_south) *
             r_step_sq);
@@ -514,7 +526,7 @@ __global__ void perform_sor_cycle(const Metadata * const metadata, compute_t * c
         (x_spatial + y_spatial - poisson_source[idx_central]);
 }
 
-}
+} // namespace kernels
 
 DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
     metadata(std::move(metadata)),
@@ -596,7 +608,7 @@ void DeviceRegion::compute_tentative_velocities() const
 void DeviceRegion::compute_poisson_source() const
 {
     kernels::compute_poisson_source<<<grid_size, block_size>>>(metadata.get(), velocity_x, velocity_y,
-        tentative_velocity_x, tentative_velocity_y, pressure);
+        tentative_velocity_x, tentative_velocity_y, pressure, poisson_source, flags);
 }
 
 compute_t DeviceRegion::compute_residual_norm_sq() const
@@ -620,6 +632,7 @@ void DeviceRegion::perform_sor_cycle() const
 
 void DeviceRegion::populate_host_region(const HostRegion &host_region) const
 {
+    SafeCUDA(cudaDeviceSynchronize());
     host_region.receive_velocity_x(velocity_x);
     host_region.receive_velocity_y(velocity_y);
     host_region.receive_pressure(pressure);
