@@ -495,14 +495,8 @@ __global__ void perform_sor_cycle(const Metadata * const metadata, compute_t * c
     compute_t x_spatial;
     compute_t y_spatial;
 
-    if ((flags[idx_central] & CELL_FLUID_ALL) == CELL_FLUID_ALL) {
-
-        weight = omega / (4 * r_step_sq);
-        x_spatial = (pressure[idx_central + 1] + pressure[idx_central - 1]) * r_step_sq;
-        y_spatial = (pressure[idx_central + metadata->extents.x] +
-            pressure[idx_central - metadata->extents.x]) * r_step_sq;
-
-    } else if (flags[idx_central] & CELL_FLUID) {
+    // TODO: special case for fluid in all directions of boundary cell.
+    if (flags[idx_central] & CELL_FLUID) {
 
         const compute_t epsilon_east = flags[idx_central + 1] & CELL_FLUID ? 1.0 : 0.0;
         const compute_t epsilon_west = flags[idx_central - 1] & CELL_FLUID ? 1.0 : 0.0;
@@ -634,8 +628,8 @@ void DeviceRegion::perform_sor_cycle() const
 void DeviceRegion::populate_host_region(const HostRegion &host_region) const
 {
     SafeCUDA(cudaDeviceSynchronize());
-    host_region.receive_velocity_x(tentative_velocity_x);
-    host_region.receive_velocity_y(tentative_velocity_y);
+    host_region.receive_velocity_x(velocity_x);
+    host_region.receive_velocity_y(velocity_y);
     host_region.receive_pressure(pressure);
 }
 

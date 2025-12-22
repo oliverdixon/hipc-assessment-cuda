@@ -46,7 +46,6 @@ int main()
     while (simulation_runtime < max_simulation_runtime) {
         device_region.apply_boundary_conditions();
         device_region.compute_tentative_velocities();
-        break; // TODO
         device_region.compute_poisson_source();
 
         compute_t residual = std::numeric_limits<compute_t>::max();
