@@ -43,7 +43,7 @@ public:
 
 private:
     template<class T>
-    T reduce_sum(T* input, std::size_t value_count, T* output, std::size_t block_count) const;
+    T reduce_sum(T* input, std::size_t value_count, T* output, std::size_t block_extent) const;
 
     std::shared_ptr<Metadata> metadata;
 

@@ -21,9 +21,9 @@ __global__ void set_body_bounds(const Metadata * const metadata, bounds * const 
     const unsigned int resolution = metadata->resolution;
     const compute_t x = static_cast<compute_t>(x_idx) / resolution - 0.5;
 
-    bounds bounds;
+    bounds bounds{};
 
-    if (x >= 0.0 || x <= 1.0) {
+    if (x >= 0.0 && x <= 1.0) {
         const compute_t maximum_camber = metadata->naca_specifier.maximum_camber / 100.0;
         const compute_t edge_distance = metadata->naca_specifier.edge_distance / 10.0;
         const compute_t thickness = metadata->naca_specifier.maximum_thickness / 100.0;
@@ -58,20 +58,21 @@ __global__ void set_boundaries(const Metadata * const metadata, compute_t * cons
         blockIdx.y * blockDim.y + threadIdx.y
     );
 
-    if (idx.x < metadata->extents.x && idx.y < metadata->extents.y) {
-        const indexer_t array_idx = idx.x + metadata->extents.x * idx.y;
+    if (idx.x >= metadata->extents.x || idx.y >= metadata->extents.y)
+        return;
 
-        velocity_x[array_idx] = Metadata::initial_velocity_x;
-        velocity_y[array_idx] = Metadata::initial_velocity_y;
-        pressure[array_idx] = Metadata::initial_pressure;
+    const indexer_t array_idx = idx.x + metadata->extents.x * idx.y;
 
-        const bounds& body_bounds = v_body_bounds[idx.x];
+    velocity_x[array_idx] = Metadata::initial_velocity_x;
+    velocity_y[array_idx] = Metadata::initial_velocity_y;
+    pressure[array_idx] = Metadata::initial_pressure;
 
-        flags[array_idx] =
-            idx.x == 0 || idx.x == metadata->extents.x - 1 ||
-            idx.y == 0 || idx.y == metadata->extents.y - 1 ||
-                (idx.y >= body_bounds.begin && idx.y < body_bounds.end) ? CELL_BOUNDARY : CELL_FLUID;
-    }
+    const bounds& body_bounds = v_body_bounds[idx.x];
+
+    flags[array_idx] =
+        idx.x == 0 || idx.x == metadata->extents.x - 1 ||
+        idx.y == 0 || idx.y == metadata->extents.y - 1 ||
+            (idx.y >= body_bounds.begin && idx.y < body_bounds.end) ? CELL_BOUNDARY : CELL_FLUID;
 }
 
 __global__ void set_neighbouring_flags(const Metadata * const metadata, cell_flags * const flags)
@@ -120,7 +121,7 @@ __global__ void apply_boundary_conditions(const Metadata * const metadata, compu
     } else if (idx.x == metadata->extents.x - 1) {
         // Fluid freely flows out to the east
         velocity_x[v_basis + idx.x - 1] = velocity_x[v_basis + idx.x - 2];
-        velocity_y[v_basis + idx.x] = velocity_x[v_basis + idx.x - 1];
+        velocity_y[v_basis + idx.x] = velocity_y[v_basis + idx.x - 1];
     }
     
     /*
@@ -137,7 +138,8 @@ __global__ void apply_boundary_conditions(const Metadata * const metadata, compu
         velocity_y[south_idx_basis - metadata->extents.x] = 0.0;
     }
     
-    if ((flags[v_basis + idx.x] & CELL_FLUID_ALL) == CELL_FLUID_ALL) {
+    if (idx.x > 1 && idx.x < metadata->extents.x - 2 && idx.y > 1 && idx.y < metadata->extents.y - 2 &&
+            !(flags[v_basis + idx.x] & CELL_FLUID)) {
         const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
 
         const indexer_t idx_north = idx.x + metadata->extents.x * (idx.y - 1);
@@ -246,8 +248,7 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
         blockIdx.y * blockDim.y + threadIdx.y
     };
 
-    // TODO maybe this condition is too restrictive.
-    if (idx.x < 1 || idx.x >= metadata->extents.x - 1 || idx.y < 1 || idx.y >= metadata->extents.y - 1)
+    if (idx.x < 1 || idx.x > metadata->extents.x - 2 || idx.y < 1 || idx.y > metadata->extents.y - 2)
         return;
 
     static constexpr compute_t reynolds = 500.0;
@@ -382,7 +383,7 @@ __global__ void compute_poisson_source(const Metadata * const metadata, const co
     }
 
     else if (idx.y == metadata->extents.y - 1) {
-        const indexer_t south_anchored_idx = metadata->extents.x * idx.y;
+        const indexer_t south_anchored_idx = idx.x + metadata->extents.x * (idx.y - 1);
         tentative_velocity_y[south_anchored_idx] = velocity_y[south_anchored_idx];
         pressure[south_anchored_idx] = pressure[south_anchored_idx - metadata->extents.x];
     }
@@ -421,10 +422,10 @@ __global__ void compute_local_residuals(const Metadata * const metadata, const c
     const indexer_t idx_south = idx.x + metadata->extents.x * (idx.y + 1);
 
     if (flags[idx_central] & CELL_FLUID) {
-        const double epsilon_east = !!(flags[idx_east] & CELL_FLUID);
-        const double epsilon_west = !!(flags[idx_west] & CELL_FLUID);
-        const double epsilon_north = !!(flags[idx_south] & CELL_FLUID);
-        const double epsilon_south = !!(flags[idx_north] & CELL_FLUID);
+        const double epsilon_east = flags[idx_east] & CELL_FLUID ? 1.0 : 0.0;
+        const double epsilon_west = flags[idx_west] & CELL_FLUID ? 1.0 : 0.0;
+        const double epsilon_north = flags[idx_north] & CELL_FLUID ? 1.0 : 0.0;
+        const double epsilon_south = flags[idx_south] & CELL_FLUID ? 1.0 : 0.0;
 
         const double x_residual = (
             epsilon_east * (pressure[idx_east] - pressure[idx_central]) -
@@ -447,7 +448,7 @@ __global__ void compute_local_residuals(const Metadata * const metadata, const c
 template<class T>
 __global__ void reduce_sum_kernel(const T* const input, T* const output, const std::size_t input_size)
 {
-    extern __shared__ int shared_memory[];
+    extern __shared__ __align__(sizeof(T)) unsigned char shared_memory[];
     T* shared_data = reinterpret_cast<T*>(shared_memory);
 
     const unsigned int thread_idx = threadIdx.x;
@@ -512,8 +513,8 @@ __global__ void perform_sor_cycle(const Metadata * const metadata, compute_t * c
             r_step_sq);
 
         x_spatial = (
-            pressure[idx_central + 1] * epsilon_west +
-            pressure[idx_central - 1] * epsilon_east) * r_step_sq;
+            pressure[idx_central + 1] * epsilon_east +
+            pressure[idx_central - 1] * epsilon_west) * r_step_sq;
 
         y_spatial = (
             pressure[idx_central + metadata->extents.x] * epsilon_south +
@@ -568,7 +569,7 @@ DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
 DeviceRegion::~DeviceRegion() noexcept
 {
     /*
-     * Do not use safe_cuda here, as the destructor shouldn't be throwing exceptions. The CUDA runtime will report any
+     * Do not use SafeCUDA here, as the destructor shouldn't be throwing exceptions. The CUDA runtime will report any
      * important failures.
      */
 
@@ -616,11 +617,11 @@ compute_t DeviceRegion::compute_residual_norm_sq() const
     kernels::compute_local_residuals<<<grid_size, block_size>>>(metadata.get(), pressure, poisson_source, flags,
         local_residuals_input, fluid_cell_markers_input);
 
-    constexpr std::size_t block_count = block_size.x * block_size.y * block_size.z;
+    constexpr std::size_t block_extent = block_size.x * block_size.y * block_size.z;
     const compute_t residual_sum = reduce_sum(local_residuals_input, metadata->allocation_count, local_residuals_output,
-        block_count);
+        block_extent);
     const unsigned int fluid_cell_count = reduce_sum(fluid_cell_markers_input, metadata->allocation_count,
-        fluid_cell_markers_output, block_count);
+        fluid_cell_markers_output, block_extent);
 
     return residual_sum / fluid_cell_count;
 }
@@ -633,14 +634,14 @@ void DeviceRegion::perform_sor_cycle() const
 void DeviceRegion::populate_host_region(const HostRegion &host_region) const
 {
     SafeCUDA(cudaDeviceSynchronize());
-    host_region.receive_velocity_x(velocity_x);
-    host_region.receive_velocity_y(velocity_y);
+    host_region.receive_velocity_x(tentative_velocity_x);
+    host_region.receive_velocity_y(tentative_velocity_y);
     host_region.receive_pressure(pressure);
 }
 
 template<class T>
 T DeviceRegion::reduce_sum(T * const input, const std::size_t value_count, T * const output,
-    const std::size_t block_count) const
+    const std::size_t block_extent) const
 {
     std::size_t remaining_blocks = value_count;
 
@@ -649,10 +650,10 @@ T DeviceRegion::reduce_sum(T * const input, const std::size_t value_count, T * c
 
     for (std::size_t round_idx = 0; remaining_blocks > 1; ++round_idx) {
         const std::size_t input_size = remaining_blocks;
-        remaining_blocks = (input_size + (2 * block_count - 1)) / (2 * block_count);
+        remaining_blocks = (input_size + (2 * block_extent - 1)) / (2 * block_extent);
 
         if (input_size != 1) {
-            kernels::reduce_sum_kernel<<<remaining_blocks, block_count, block_count * sizeof(T)>>>(reduction_input,
+            kernels::reduce_sum_kernel<<<remaining_blocks, block_extent, block_extent * sizeof(T)>>>(reduction_input,
                 reduction_output, input_size);
 
             if (round_idx & 1) {
