@@ -35,7 +35,7 @@ int main()
     const auto metadata = owd::metadata_create();
     const owd::DeviceRegion device_region(metadata);
 
-    static constexpr compute_t max_simulation_runtime = 1.0;
+    const compute_t max_simulation_runtime = metadata->timestep_duration * 10; // TODO
     static constexpr indexer_t sor_max_iterations = 100;
     static constexpr compute_t sor_residual_epsilon = 0.001;
     static constexpr indexer_t output_freq = 100;
@@ -52,16 +52,21 @@ int main()
 
         for (indexer_t sor_iteration = 0; sor_iteration < sor_max_iterations; ++sor_iteration) {
             device_region.perform_sor_cycle();
+#if 0 // TODO
             residual = device_region.compute_residual_norm_sq();
             if (std::fabs(residual) < sor_residual_epsilon * sor_residual_epsilon)
                 break; // SOR has converged.
+#endif
         }
 
         device_region.update_velocities();
         simulation_runtime += metadata->timestep_duration;
+
         if (step_iteration % output_freq == 0)
             std::cout << "Step: " << step_iteration << ", Time: " << simulation_runtime << ", Residual: " << residual <<
                 std::endl;
+
+        ++step_iteration;
     }
 
     const owd::HostRegion host_region(metadata);

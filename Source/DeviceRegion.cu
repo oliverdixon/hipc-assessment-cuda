@@ -9,6 +9,12 @@
 namespace owd
 {
 
+enum SORPhase
+{
+    SOR_RED = 0,
+    SOR_BLACK = 1
+};
+
 namespace kernels
 {
 
@@ -101,8 +107,30 @@ __global__ void set_neighbouring_flags(const Metadata * const metadata, cell_fla
     }
 }
 
-__global__ void apply_boundary_conditions(const Metadata * const metadata, compute_t * const velocity_x,
-    compute_t * const velocity_y, const cell_flags * const flags)
+__global__ void apply_west_east_boundary_conditions(const Metadata * const metadata, compute_t * const velocity_x,
+    compute_t * const velocity_y)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
+
+    if (idx.y >= metadata->extents.y)
+        return;
+
+    // Fluid freely flows in from the west
+    const indexer_t west_basis = metadata->extents.x * idx.y;
+    velocity_x[west_basis] = velocity_x[west_basis + 1];
+    velocity_y[west_basis] = velocity_y[west_basis + 1];
+
+    // Fluid freely flows out to the east
+    const indexer_t east_basis = west_basis + metadata->extents.x - 1;
+    velocity_x[east_basis - 1] = velocity_x[east_basis - 2];
+    velocity_y[east_basis] = velocity_y[east_basis - 1];
+}
+
+__global__ void apply_north_south_boundary_conditions(const Metadata * const metadata, compute_t * const velocity_x,
+    compute_t * const velocity_y)
 {
     const dim2 idx{
         blockIdx.x * blockDim.x + threadIdx.x,
@@ -112,103 +140,108 @@ __global__ void apply_boundary_conditions(const Metadata * const metadata, compu
     if (idx.x >= metadata->extents.x || idx.y >= metadata->extents.y)
         return;
 
-    const indexer_t v_basis = metadata->extents.x * idx.y;
-
-    if (idx.x == 0) {
-        // Fluid freely flows in from the west
-        velocity_x[v_basis] = velocity_x[v_basis + 1];
-        velocity_y[v_basis] = velocity_y[v_basis + 1];
-    } else if (idx.x == metadata->extents.x - 1) {
-        // Fluid freely flows out to the east
-        velocity_x[v_basis + idx.x - 1] = velocity_x[v_basis + idx.x - 2];
-        velocity_y[v_basis + idx.x] = velocity_y[v_basis + idx.x - 1];
-    }
-    
     /*
-     * At the north and south boundaries, the vertical velocity approaches zero and fluid flows freely on the
-     * horizontal.
+     * At the north boundary, the vertical velocity approaches zero. Fluid approaches freely. The basis is our position
+     * on the north row.
      */
-    if (idx.y == 0) {
-        const indexer_t north_idx_basis = idx.x;
-        velocity_x[north_idx_basis] = velocity_x[north_idx_basis + metadata->extents.x];
-        velocity_y[north_idx_basis] = 0.0;
-    } else if (idx.y == metadata->extents.y - 1) {
-        const indexer_t south_idx_basis = idx.x + metadata->extents.x * (metadata->extents.y - 1);
-        velocity_x[south_idx_basis] = velocity_x[south_idx_basis - metadata->extents.x];
-        velocity_y[south_idx_basis - metadata->extents.x] = 0.0;
-    }
-    
-    if (idx.x > 1 && idx.x < metadata->extents.x - 2 && idx.y > 1 && idx.y < metadata->extents.y - 2 &&
-            !(flags[v_basis + idx.x] & CELL_FLUID)) {
-        const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
+    const indexer_t north_basis = idx.x;
+    velocity_x[north_basis] = velocity_x[north_basis + metadata->extents.x];
+    velocity_y[north_basis] = 0.0;
 
-        const indexer_t idx_north = idx.x + metadata->extents.x * (idx.y - 1);
-        const indexer_t idx_south = idx.x + metadata->extents.x * (idx.y + 1);
-        const indexer_t idx_west = idx.x - 1 + metadata->extents.x * idx.y;
-        const indexer_t idx_east = idx.x + 1 + metadata->extents.x * idx.y;
+    // Ditto for the south boundary. The basis is our position on the south row.
+    const indexer_t south_basis = north_basis + (metadata->extents.y - 1) * metadata->extents.x;
+    velocity_x[south_basis] = velocity_x[south_basis - metadata->extents.x];
+    velocity_y[south_basis - metadata->extents.x] = 0.0;
+}
 
-        const indexer_t idx_northeast = idx.x + 1 + metadata->extents.x * (idx.y - 1);
-        const indexer_t idx_southwest = idx.x - 1 + metadata->extents.x * (idx.y + 1);
-        const indexer_t idx_northwest = idx.x - 1 + metadata->extents.x * (idx.y - 1);
+__global__ void apply_inflow_boundary_conditions(const Metadata * const metadata, compute_t * const velocity_x,
+    compute_t * const velocity_y)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
 
-        switch (flags[v_basis + idx.x]) {
-        case CELL_FLUID_NORTH:
-            velocity_y[idx_central] = 0.0;
-            velocity_x[idx_central] = -velocity_x[idx_south];
-            velocity_x[idx_west] = -velocity_x[idx_southwest];
-            break;
-        case CELL_FLUID_EAST:
-            velocity_x[idx_central] = 0.0;
-            velocity_y[idx_central] = -velocity_y[idx_east];
-            velocity_y[idx_north] = -velocity_y[idx_northeast];
-            break;
-        case CELL_FLUID_SOUTH:
-            velocity_y[idx_north] = 0.0;
-            velocity_x[idx_central] = -velocity_x[idx_north];
-            velocity_x[idx_west] = -velocity_x[idx_northwest];
-            break;
-        case CELL_FLUID_WEST:
-            velocity_x[idx_west] = 0.0;
-            velocity_y[idx_central] = -velocity_y[idx_west];
-            velocity_y[idx_north] = -velocity_y[idx_northwest];
-            break;
-        case CELL_FLUID_NORTHEAST:
-            velocity_y[idx_central] = 0.0;
-            velocity_x[idx_central] = 0.0;
-            velocity_y[idx_north] = -velocity_y[idx_northeast];
-            velocity_x[idx_west] = -velocity_x[idx_southwest];
-            break;
-        case CELL_FLUID_SOUTHEAST:
-            velocity_y[idx_north] = 0.0;
-            velocity_x[idx_central] = 0.0;
-            velocity_y[idx_central] = -velocity_y[idx_east];
-            velocity_x[idx_west] = -velocity_x[idx_northwest];
-            break;
-        case CELL_FLUID_SOUTHWEST:
-            velocity_y[idx_north] = 0.0;
-            velocity_x[idx_west] = 0.0;
-            velocity_y[idx_central] = -velocity_y[idx_west];
-            velocity_x[idx_central] = -velocity_x[idx_north];
-            break;
-        case CELL_FLUID_NORTHWEST:
-            velocity_y[idx_central] = 0.0;
-            velocity_x[idx_west] = 0.0;
-            velocity_y[idx_north] = -velocity_y[idx_northwest];
-            velocity_x[idx_central] = -velocity_x[idx_south];
-            break;
-        default:;
-        }
-    }
+    if (idx.y >= metadata->extents.y)
+        return;
 
-    if (idx.x == 0) {
-        /*
-         * If we're on a western boundary, fix the western-edge velocities such that there is a continual flow of fluid
-         * into the simulation space.
-         */
+    // Fix the western-edge velocities such that there is a continual flow of fluid into the simulation space.
+    const indexer_t west_anchored_idx = metadata->extents.x * idx.y;
+    velocity_x[west_anchored_idx] = Metadata::initial_velocity_x;
+    velocity_y[west_anchored_idx] = 2 * Metadata::initial_velocity_y - velocity_y[west_anchored_idx + 1];
+}
 
-        const indexer_t west_anchored_idx = metadata->extents.x * idx.y;
-        velocity_x[west_anchored_idx] = Metadata::initial_velocity_x;
-        velocity_y[west_anchored_idx] = 2 * Metadata::initial_velocity_y - velocity_y[west_anchored_idx + 1];
+__global__ void apply_obstacle_boundary_conditions(const Metadata * const metadata, compute_t * const velocity_x,
+    compute_t * const velocity_y, const cell_flags * const flags)
+{
+    const dim2 idx{
+        blockIdx.x * blockDim.x + threadIdx.x,
+        blockIdx.y * blockDim.y + threadIdx.y
+    };
+
+    if (idx.x < 1 || idx.x >= metadata->extents.x - 1 || idx.y < 1 || idx.y >= metadata->extents.y - 1)
+        return; // Kernel invocation is not in the interior.
+
+    const indexer_t idx_central = idx.x + idx.y * metadata->extents.x;
+
+    if (flags[idx_central] & CELL_FLUID)
+        return; // Obstacle boundary conditions apply only to non-fluid cells.
+
+    const indexer_t idx_north = idx.x + metadata->extents.x * (idx.y - 1);
+    const indexer_t idx_south = idx.x + metadata->extents.x * (idx.y + 1);
+    const indexer_t idx_west = idx.x - 1 + metadata->extents.x * idx.y;
+    const indexer_t idx_east = idx.x + 1 + metadata->extents.x * idx.y;
+
+    const indexer_t idx_northeast = idx.x + 1 + metadata->extents.x * (idx.y - 1);
+    const indexer_t idx_southwest = idx.x - 1 + metadata->extents.x * (idx.y + 1);
+    const indexer_t idx_northwest = idx.x - 1 + metadata->extents.x * (idx.y - 1);
+
+    switch (flags[idx_central]) {
+    case CELL_FLUID_NORTH:
+        velocity_y[idx_central] = 0.0;
+        velocity_x[idx_central] = -velocity_x[idx_south];
+        velocity_x[idx_west] = -velocity_x[idx_southwest];
+        break;
+    case CELL_FLUID_EAST:
+        velocity_x[idx_central] = 0.0;
+        velocity_y[idx_central] = -velocity_y[idx_east];
+        velocity_y[idx_north] = -velocity_y[idx_northeast];
+        break;
+    case CELL_FLUID_SOUTH:
+        velocity_y[idx_north] = 0.0;
+        velocity_x[idx_central] = -velocity_x[idx_north];
+        velocity_x[idx_west] = -velocity_x[idx_northwest];
+        break;
+    case CELL_FLUID_WEST:
+        velocity_x[idx_west] = 0.0;
+        velocity_y[idx_central] = -velocity_y[idx_west];
+        velocity_y[idx_north] = -velocity_y[idx_northwest];
+        break;
+    case CELL_FLUID_NORTHEAST:
+        velocity_y[idx_central] = 0.0;
+        velocity_x[idx_central] = 0.0;
+        velocity_y[idx_north] = -velocity_y[idx_northeast];
+        velocity_x[idx_west] = -velocity_x[idx_southwest];
+        break;
+    case CELL_FLUID_SOUTHEAST:
+        velocity_y[idx_north] = 0.0;
+        velocity_x[idx_central] = 0.0;
+        velocity_y[idx_central] = -velocity_y[idx_east];
+        velocity_x[idx_west] = -velocity_x[idx_northwest];
+        break;
+    case CELL_FLUID_SOUTHWEST:
+        velocity_y[idx_north] = 0.0;
+        velocity_x[idx_west] = 0.0;
+        velocity_y[idx_central] = -velocity_y[idx_west];
+        velocity_x[idx_central] = -velocity_x[idx_north];
+        break;
+    case CELL_FLUID_NORTHWEST:
+        velocity_y[idx_central] = 0.0;
+        velocity_x[idx_west] = 0.0;
+        velocity_y[idx_north] = -velocity_y[idx_northwest];
+        velocity_x[idx_central] = -velocity_x[idx_south];
+        break;
+    default:;
     }
 }
 
@@ -227,15 +260,14 @@ __global__ void update_velocities(const Metadata * const metadata, compute_t * c
     const compute_t pressure_diff_factor = metadata->timestep_duration * metadata->resolution;
     const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
 
-    if (flags[idx_central] & CELL_FLUID && flags[idx_central + 1] & CELL_FLUID) {
+    if (flags[idx_central] & CELL_FLUID) {
+        if (flags[idx_central + 1] & CELL_FLUID)
+            velocity_x[idx_central] = tentative_velocity_x[idx_central] -
+                (pressure[idx_central + 1] - pressure[idx_central]) * pressure_diff_factor;
 
-        // TODO: might need to check the bounds here?
-
-        velocity_x[idx_central] = tentative_velocity_x[idx_central] -
-            (pressure[idx_central + 1] - pressure[idx_central]) * pressure_diff_factor;
-
-        velocity_y[idx_central] = tentative_velocity_y[idx_central] -
-            (pressure[idx_central + metadata->extents.x] - pressure[idx_central]) * pressure_diff_factor;
+        if (flags[idx_central + metadata->extents.x] & CELL_FLUID)
+            velocity_y[idx_central] = tentative_velocity_y[idx_central] -
+                (pressure[idx_central + metadata->extents.x] - pressure[idx_central]) * pressure_diff_factor;
     }
 }
 
@@ -371,7 +403,7 @@ __global__ void compute_poisson_source(const Metadata * const metadata, const co
     }
 
     else if (idx.x == metadata->extents.x - 1) {
-        const indexer_t east_anchored_idx = metadata->extents.x * idx.y + metadata->extents.x;
+        const indexer_t east_anchored_idx = idx.x + idx.y * metadata->extents.x;
         tentative_velocity_x[east_anchored_idx] = velocity_x[east_anchored_idx];
         pressure[east_anchored_idx] = pressure[east_anchored_idx - 1];
     }
@@ -477,48 +509,40 @@ __global__ void reduce_sum_kernel(const T* const input, T* const output, const s
 }
 
 __global__ void perform_sor_cycle(const Metadata * const metadata, compute_t * const pressure,
-    const compute_t * const poisson_source, const cell_flags * const flags)
+    const compute_t * const poisson_source, const cell_flags * const flags, const SORPhase phase)
 {
     const dim2 idx{
         blockIdx.x * blockDim.x + threadIdx.x,
         blockIdx.y * blockDim.y + threadIdx.y
     };
 
-    if (idx.x > metadata->extents.x - 1 || idx.y > metadata->extents.y - 1)
+    if (idx.x >= metadata->extents.x - 1 || idx.y >= metadata->extents.y - 1)
+        return;
+
+    if ((idx.x + idx.y & 1) != phase)
+        // Kernel invocation not applicable for the requested phase.
         return;
     
     const indexer_t idx_central = idx.x + metadata->extents.x * idx.y;
-    static constexpr compute_t omega = 1.7; // TODO move
-    const compute_t r_step_sq = 1.0 / (metadata->resolution * metadata->resolution);
 
-    compute_t weight;
-    compute_t x_spatial;
-    compute_t y_spatial;
-
-    // TODO: special case for fluid in all directions of boundary cell.
-    if (flags[idx_central] & CELL_FLUID) {
-
-        const compute_t epsilon_east = flags[idx_central + 1] & CELL_FLUID ? 1.0 : 0.0;
-        const compute_t epsilon_west = flags[idx_central - 1] & CELL_FLUID ? 1.0 : 0.0;
-        const compute_t epsilon_north = flags[idx_central - metadata->extents.x] & CELL_FLUID ? 1.0 : 0.0;
-        const compute_t epsilon_south = flags[idx_central + metadata->extents.x] & CELL_FLUID ? 1.0 : 0.0;
-
-        weight = omega / ((epsilon_east + epsilon_west) * r_step_sq + (epsilon_north + epsilon_south) *
-            r_step_sq);
-
-        x_spatial = (
-            pressure[idx_central + 1] * epsilon_east +
-            pressure[idx_central - 1] * epsilon_west) * r_step_sq;
-
-        y_spatial = (
-            pressure[idx_central + metadata->extents.x] * epsilon_south +
-            pressure[idx_central - metadata->extents.x] * epsilon_north) * r_step_sq;
-    } else
-        // Nothing to do for non-fluid cells.
+    if (!(flags[idx_central] & CELL_FLUID))
         return;
 
+    static constexpr compute_t omega = 1.7; // TODO move
+    const compute_t step_sq = metadata->resolution * metadata->resolution;
+
+    const compute_t epsilon_east = flags[idx_central + 1] & CELL_FLUID ? 1.0 : 0.0;
+    const compute_t epsilon_west = flags[idx_central - 1] & CELL_FLUID ? 1.0 : 0.0;
+    const compute_t epsilon_north = flags[idx_central - metadata->extents.x] & CELL_FLUID ? 1.0 : 0.0;
+    const compute_t epsilon_south = flags[idx_central + metadata->extents.x] & CELL_FLUID ? 1.0 : 0.0;
+
+    const compute_t weight = omega / ((epsilon_east + epsilon_west + epsilon_north + epsilon_south) * step_sq);
+    const compute_t x_spatial = pressure[idx_central + 1] * epsilon_east + pressure[idx_central - 1] * epsilon_west;
+    const compute_t y_spatial = pressure[idx_central + metadata->extents.x] * epsilon_south +
+        pressure[idx_central - metadata->extents.x] * epsilon_north;
+
     pressure[idx_central] = (1.0 - omega) * pressure[idx_central] + weight *
-        (x_spatial + y_spatial - poisson_source[idx_central]);
+        (step_sq * (x_spatial + y_spatial) - poisson_source[idx_central]);
 }
 
 } // namespace kernels
@@ -585,7 +609,12 @@ DeviceRegion::~DeviceRegion() noexcept
 
 void DeviceRegion::apply_boundary_conditions() const
 {
-    kernels::apply_boundary_conditions<<<grid_size, block_size>>>(metadata.get(), velocity_x, velocity_y, flags);
+    const auto metadata_ptr = metadata.get();
+
+    kernels::apply_west_east_boundary_conditions<<<grid_size, block_size>>>(metadata_ptr, velocity_x, velocity_y);
+    kernels::apply_north_south_boundary_conditions<<<grid_size, block_size>>>(metadata_ptr, velocity_x, velocity_y);
+    kernels::apply_obstacle_boundary_conditions<<<grid_size, block_size>>>(metadata_ptr, velocity_x, velocity_y, flags);
+    kernels::apply_inflow_boundary_conditions<<<grid_size, block_size>>>(metadata_ptr, velocity_x, velocity_y);
 }
 
 void DeviceRegion::update_velocities() const
@@ -622,7 +651,10 @@ compute_t DeviceRegion::compute_residual_norm_sq() const
 
 void DeviceRegion::perform_sor_cycle() const
 {
-    kernels::perform_sor_cycle<<<grid_size, block_size>>>(metadata.get(), pressure, poisson_source, flags);
+    const auto metadata_ptr = metadata.get();
+
+    kernels::perform_sor_cycle<<<grid_size, block_size>>>(metadata_ptr, pressure, poisson_source, flags, SOR_RED);
+    kernels::perform_sor_cycle<<<grid_size, block_size>>>(metadata_ptr, pressure, poisson_source, flags, SOR_BLACK);
 }
 
 void DeviceRegion::populate_host_region(const HostRegion &host_region) const

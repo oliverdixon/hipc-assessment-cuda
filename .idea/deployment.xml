@@ -13,6 +13,8 @@
             <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-usb-local" />
             <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-release-viking" />
             <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-debug-viking" />
+            <excludedPath local="true" path="$PROJECT_DIR$/out" />
+            <excludedPath path="/cuda/out" />
           </excludedPaths>
         </serverdata>
       </paths>
