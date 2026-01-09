@@ -11,6 +11,7 @@ add_executable(Airfoil_CUDA
         Source/HostRegion.cuh
         Source/Metadata.cuh
         Source/SafeCUDA.cuh
+        Source/SerialPrototype.hpp
 )
 
 set_property(TARGET Airfoil_CUDA PROPERTY CUDA_SEPARABLE_COMPILATION ON)
