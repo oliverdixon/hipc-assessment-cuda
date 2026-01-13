@@ -46,11 +46,6 @@ void HostRegion::receive_pressure(const compute_t * const pressure_source) const
     SafeCUDA(cudaMemcpy(pressure, pressure_source, metadata->allocation_byte_count, cudaMemcpyDeviceToHost));
 }
 
-void HostRegion::receive_flags(const cell_flags *flags_source) const
-{
-    SafeCUDA(cudaMemcpy(flags, flags_source, metadata->allocation_count * sizeof(cell_flags), cudaMemcpyDeviceToHost));
-}
-
 void HostRegion::vtk_serialise(std::ostream &ostream) const
 {
     // Prologue
@@ -119,26 +114,6 @@ void HostRegion::vtk_serialise(std::ostream &ostream) const
     ostream << "\t\t</Piece>\n";
     ostream << "\t</RectilinearGrid>\n";
     ostream << "</VTKFile>\n";
-}
-
-void HostRegion::copy_vx(const compute_t *velocity_x_source) const
-{
-    std::memcpy(velocity_x, velocity_x_source, metadata->allocation_byte_count);
-}
-
-void HostRegion::copy_vy(const compute_t *velocity_y_source) const
-{
-    std::memcpy(velocity_y, velocity_y_source, metadata->allocation_byte_count);
-}
-
-void HostRegion::copy_p(const compute_t *pressure_source) const
-{
-    std::memcpy(pressure, pressure_source, metadata->allocation_byte_count);
-}
-
-void HostRegion::copy_flags(const cell_flags *flags_source) const
-{
-    std::memcpy(flags, flags_source, metadata->allocation_count * sizeof(cell_flags));
 }
 
 } // namespace owd

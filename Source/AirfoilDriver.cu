@@ -3,12 +3,10 @@
 //
 
 #include <fstream>
-#include <iostream>
 
 #include "DeviceRegion.cuh"
 #include "HostRegion.cuh"
 #include "SafeCUDA.cuh"
-#include "SerialPrototype.hpp"
 
 namespace owd
 {
@@ -33,14 +31,12 @@ static std::shared_ptr<Metadata> metadata_create()
 
 int main()
 {
-    const auto metadata = owd::metadata_create();
+    auto metadata = owd::metadata_create();
 
     const owd::DeviceRegion device_region(metadata);
-    // const owd::SerialPrototype device_region(metadata);
 
-    const compute_t max_simulation_runtime = 0.1; // TODO
+    constexpr compute_t max_simulation_runtime = 2.0;
     static constexpr indexer_t sor_max_iterations = 100;
-    static constexpr compute_t sor_residual_epsilon = 0.001;
     static constexpr indexer_t output_freq = 100;
 
     compute_t simulation_runtime = 0.0;
@@ -56,13 +52,15 @@ int main()
 
         device_region.update_velocities();
         simulation_runtime += metadata->timestep_duration;
+
+        if (step_iteration % output_freq == 0)
+            printf("Step %8d, Time: %14.8e\n", step_iteration, simulation_runtime);
+
+        ++step_iteration;
     }
 
     const owd::HostRegion host_region(metadata);
     device_region.populate_host_region(host_region);
-
-    std::ofstream output_file("out/flows.vtr");
-    host_region.vtk_serialise(output_file);
 
     return 0;
 }

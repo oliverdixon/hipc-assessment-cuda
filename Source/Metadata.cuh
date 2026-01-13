@@ -35,22 +35,23 @@ struct Metadata
         resolution(resolution),
         naca_specifier(naca_specifier),
         problem_size(problem_size),
-        timestep_duration(timestep_duration),
         allocation_count(extents.x * extents.y),
-        allocation_byte_count(allocation_count * sizeof(compute_t))
+        allocation_byte_count(allocation_count * sizeof(compute_t)),
+        timestep_duration(timestep_duration)
     { }
 
     const dim2 extents;
     const unsigned int resolution;
     const NACASpecifier naca_specifier;
     const compute_dim2 problem_size;
-    const compute_t timestep_duration;
     const std::size_t allocation_count;
     const std::size_t allocation_byte_count;
 
     static constexpr compute_t initial_velocity_x = 1.0;
     static constexpr compute_t initial_velocity_y = 0.0;
     static constexpr compute_t initial_pressure = 0.0;
+
+    compute_t timestep_duration;
 };
 
 } // namespace owd

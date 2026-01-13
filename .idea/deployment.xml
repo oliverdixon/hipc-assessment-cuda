@@ -2,20 +2,32 @@
 <project version="4">
   <component name="PublishConfigData" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
-      <paths name="Viking Tunnel (d30ffef0-3880-4d06-b955-4e491d45026f)">
+      <paths name="Intel OneAPI (ec1c2553-950d-4c6b-a6bd-f28f1d26f8a3)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/hipc-assessment-cuda" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="Viking (772105ca-4afa-451a-809c-f44333a65448)">
         <serverdata>
           <mappings>
             <mapping deploy="/cuda" local="$PROJECT_DIR$" />
           </mappings>
           <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-debug-viking" />
             <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-viking" />
             <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-relwithdebinfo-viking" />
-            <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-usb-local" />
-            <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-release-viking" />
-            <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-debug-viking" />
-            <excludedPath local="true" path="$PROJECT_DIR$/out" />
             <excludedPath path="/cuda/out" />
+            <excludedPath local="true" path="$PROJECT_DIR$/out" />
           </excludedPaths>
+        </serverdata>
+      </paths>
+      <paths name="Viking Tunnel (a1add696-7efd-4ca6-88b7-26827f99ce6f)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/cuda" local="$PROJECT_DIR$" web="/" />
+          </mappings>
         </serverdata>
       </paths>
     </serverData>

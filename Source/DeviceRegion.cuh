@@ -37,6 +37,8 @@ public:
 
     [[nodiscard]] compute_t compute_residual_norm_sq() const;
 
+    [[nodiscard]] compute_t estimate_timestep() const;
+
     void perform_sor_cycle() const;
 
     void populate_host_region(const HostRegion& host_region) const;
@@ -47,7 +49,8 @@ private:
 
     std::shared_ptr<Metadata> metadata;
 
-    static constexpr dim3 block_size = { 8, 8, 1 }; // TODO: dynamic block size with cudaOccupancyMaxPotentialBlockSize
+    // Dynamic block size with cudaOccupancyMaxPotentialBlockSize
+    static constexpr dim3 block_size = { 8, 8, 1 };
     const dim3 grid_size;
 
     static constexpr compute_t initial_velocity_x = 1.0;

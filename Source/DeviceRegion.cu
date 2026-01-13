@@ -180,8 +180,6 @@ __global__ void apply_inflow_boundary_conditions(const Metadata * const metadata
 __global__ void apply_obstacle_boundary_conditions(const Metadata * const metadata, compute_t * const velocity_x,
     compute_t * const velocity_y, const cell_flags * const flags)
 {
-    // TODO: this kernel is subject to race conditions, as each invocation writes to its neighbours. Needs fix.
-
     const dim2 idx{
         blockIdx.x * blockDim.x + threadIdx.x,
         blockIdx.y * blockDim.y + threadIdx.y
@@ -296,7 +294,6 @@ __global__ void compute_tentative_velocities(const Metadata * const metadata, co
     const compute_t quarter_resolution = metadata->resolution / 4.0;
     const compute_t sq_resolution = metadata->resolution * metadata->resolution;
 
-    // TODO: check this. Why only checking east when else comment indicates "adjacent cells"?
     if (idx.x < metadata->extents.x - 2 && flags[idx_central] & CELL_FLUID && flags[idx_east] & CELL_FLUID) {
         const compute_t self_advection_x =
             (
@@ -569,6 +566,72 @@ __global__ void perform_sor_cycle(const Metadata * const metadata, compute_t * c
         (step_sq * (x_spatial + y_spatial) - poisson[TAGS_SELF]);
 }
 
+__global__ void max_abs_kernel(
+    const compute_t* vel,
+    int x_extent,
+    int y_extent,
+    int h_start,
+    int v_start,
+    compute_t* block_max)
+{
+    extern __shared__ compute_t sdata[];
+
+    unsigned int tid = threadIdx.x;
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    compute_t local = -INFINITY;
+
+    int total = x_extent * y_extent;
+
+    for (int i = idx; i < total; i += blockDim.x * gridDim.x)
+    {
+        int h = i / y_extent;
+        int v = i % y_extent;
+
+        if (h >= h_start && v >= v_start)
+            local = fmax(local, fabs(vel[i]));
+    }
+
+    // reduction in shared memory
+    sdata[tid] = local;
+    __syncthreads();
+
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1)
+    {
+        if (tid < s)
+            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+        __syncthreads();
+    }
+
+    if (tid == 0)
+        block_max[blockIdx.x] = sdata[0];
+}
+
+__global__ void max_reduce_final(compute_t* data, int n)
+{
+    extern __shared__ compute_t sdata[];
+
+    int tid = threadIdx.x;
+    int idx = tid;
+
+    if (idx < n)
+        sdata[tid] = data[idx];
+    else
+        sdata[tid] = -INFINITY;
+
+    __syncthreads();
+
+    for (int s = blockDim.x >> 1; s > 0; s >>= 1)
+    {
+        if (tid < s)
+            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+        __syncthreads();
+    }
+
+    if (tid == 0)
+        data[0] = sdata[0];
+}
+
 } // namespace kernels
 
 DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
@@ -589,8 +652,6 @@ DeviceRegion::DeviceRegion(std::shared_ptr<Metadata> metadata) :
     SafeCUDA(cudaMalloc(&pressure, allocation_extent_bytes));
     SafeCUDA(cudaMalloc(&poisson_source, allocation_extent_bytes));
     SafeCUDA(cudaMalloc(&flags, sizeof(cell_flags) * allocation_extent));
-
-    // TODO: reduction array output sizes can be reduced by a factor of block count.
 
     SafeCUDA(cudaMalloc(&local_residuals_input, allocation_extent_bytes));
     SafeCUDA(cudaMalloc(&fluid_cell_markers_input, sizeof(unsigned int) * allocation_extent));
@@ -672,6 +733,38 @@ compute_t DeviceRegion::compute_residual_norm_sq() const
     return residual_sum / fluid_cell_count;
 }
 
+compute_t DeviceRegion::estimate_timestep() const
+{
+    compute_t * block_max;
+    SafeCUDA(cudaMalloc(&block_max, block_size.x * block_size.y));
+
+    // Reduce the X maximum on each thread block.
+    kernels::max_abs_kernel<<<grid_size, block_size>>>(velocity_x, metadata->extents.x - 1, metadata->extents.y - 1,
+        1, 1, block_max);
+
+    // Reduce the X across all thread blocks.
+    kernels::max_reduce_final<<<1, block_size>>>(block_max, block_size.x * block_size.y);
+
+    // Reduce the Y maximum on each thread block.
+    kernels::max_abs_kernel<<<grid_size, block_size>>>(velocity_y, metadata->extents.x - 1, metadata->extents.y - 1,
+        1, 1, block_max);
+
+    // Reduce the Y across all thread blocks.
+    kernels::max_reduce_final<<<1, block_size>>>(block_max, block_size.x * block_size.y);
+
+    compute_t x_max;
+    compute_t y_max;
+    SafeCUDA(cudaMemcpy(&x_max, block_max, sizeof(compute_t), cudaMemcpyDeviceToHost));
+    SafeCUDA(cudaMemcpy(&y_max, block_max, sizeof(compute_t), cudaMemcpyDeviceToHost));
+
+    const compute_t grid_spacing = 1.0 / metadata->resolution;
+    const compute_t cfl_limit = fmin(grid_spacing / x_max, grid_spacing / y_max);
+    const compute_t reynolds_delta = 1.0 / (1.0 / (grid_spacing * grid_spacing) +
+        1 / (grid_spacing * grid_spacing)) * 500 / 2.0;
+
+    return 0.5 * fmin(cfl_limit, reynolds_delta);
+}
+
 void DeviceRegion::perform_sor_cycle() const
 {
     const auto metadata_ptr = metadata.get();
@@ -685,14 +778,15 @@ void DeviceRegion::populate_host_region(const HostRegion &host_region) const
     SafeCUDA(cudaDeviceSynchronize());
     host_region.receive_velocity_x(velocity_x);
     host_region.receive_velocity_y(velocity_y);
-    host_region.receive_pressure(poisson_source);
-    host_region.receive_flags(flags);
+    host_region.receive_pressure(pressure);
 }
 
 template<class T>
 T DeviceRegion::reduce_sum(T * const input, const std::size_t value_count, T * const output,
     const std::size_t block_extent) const
 {
+    // Reduction logic from Mark Harris' 2007 presentation:
+    // https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
     std::size_t remaining_blocks = value_count;
 
     T * reduction_input = input;

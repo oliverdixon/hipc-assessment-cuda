@@ -26,22 +26,7 @@ public:
 
     void receive_pressure(const compute_t * pressure_source) const;
 
-    // TODO remove
-    void receive_flags(const cell_flags * flags_source) const;
-
     void vtk_serialise(std::ostream& ostream) const;
-
-    // TODO remove
-    void copy_vx(const compute_t * velocity_x_source) const;
-
-    // TODO remove
-    void copy_vy(const compute_t * velocity_y_source) const;
-
-    // TODO remove
-    void copy_p(const compute_t * pressure_source) const;
-
-    // TODO remove
-    void copy_flags(const cell_flags * flags_source) const;
 
 private:
     std::shared_ptr<Metadata> metadata;
